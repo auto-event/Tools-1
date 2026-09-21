@@ -232,7 +232,7 @@
         <b>Format tanpa header (otomatis dikenali):</b> tiap baris = 1 event. Kolom pertama = judul; kolom berlabel
         <code class="inline">Date:</code> dan <code class="inline">Time:</code> (mis. <i>Saturday, Sep 19, 2026</i> dan <i>4:00 PM CDT</i>) dibaca sebagai jadwal
         dibaca apa adanya beserta zona waktunya (jam tidak diubah; YouTube tetap menerima waktu yang tepat); kolom lain jadi deskripsi; kolom berawalan <code class="inline">#</code> jadi hashtag dan tags;
-        <b>kolom ke-14 (N)</b> tidak dimasukkan ke deskripsi &mdash; dipakai sebagai <b>pesan Auto Chat</b> (lihat di bawah).<br>
+        <b>kolom ke-14 (N)</b> tidak dimasukkan ke deskripsi &mdash; dipakai sebagai <b>pesan Auto Chat</b> (lihat di bawah). Kalau barisnya lebih pendek dari 14 kolom, sel yang diawali "Watch Live Stream", "Auto Chat:", atau "Live Chat:" tetap otomatis dikenali sebagai pesan Auto Chat, bukan ikut ke deskripsi.<br>
         <label style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">Privacy untuk format ini:
           <select id="newFormatPrivacy" style="width:auto;padding:8px;">
             <option value="private">private</option>
@@ -1023,12 +1023,24 @@
       var n = idx + 1;
       var vals = cells.map(function(c){ return String(c == null ? "" : c).trim(); });
       var title = vals[0] || "";
-      var AUTOCHAT_COL_INDEX = 13;   // kolom N (ke-14, A=0-based) = sumber pesan Auto Chat, TIDAK ikut masuk deskripsi
+      var AUTOCHAT_COL_INDEX = 13;   // kolom N (ke-14, A=0-based) = posisi normal sumber pesan Auto Chat
+      // Kolom "Watch Live Stream 📺: <link>" (atau "Auto Chat:"/"Live Chat:") = pesan Auto Chat, TIDAK masuk deskripsi.
+      // Kadang ada JUGA sel di posisi lain yang cuma berisi label ini tanpa isi (mis. "Watch Live Stream 📺:" kosong,
+      // dipakai user cuma buat placeholder) -> itu harus di-skip total, jangan sampai nyasar ke deskripsi maupun ke autoChatText.
+      var AUTOCHAT_LABEL_RE = /^[^A-Za-z0-9#]*(watch\s*live\s*stream|auto\s*chat|live\s*chat)\b[^:]*:\s*(.*)$/i;
       var dateText = null, timeText = null, hashtags = [], descLines = [], autoChatText = "";
+      var autoChatByIndex = (vals[AUTOCHAT_COL_INDEX] || "").trim();
       vals.forEach(function(v, ci){
         if (!v || ci === 0) return;
         if (v === title) return;                        // kolom judul yang diulang
-        if (ci === AUTOCHAT_COL_INDEX){ autoChatText = v; return; }   // kolom N -> pesan chat, bukan deskripsi
+        var chatMatch = v.match(AUTOCHAT_LABEL_RE);
+        if (chatMatch){
+          var chatContent = chatMatch[2].trim();
+          if (ci === AUTOCHAT_COL_INDEX || (!autoChatByIndex && !autoChatText && chatContent)){
+            autoChatText = chatContent || v;              // kolom N (atau fallback posisi lain) -> pesan chat
+          }
+          return;                                         // label live chat, apa pun isinya, tidak pernah masuk deskripsi
+        }
         var d = cellLabelValue(v, "Date");
         var t = cellLabelValue(v, "Time");
         if (d !== null && dateText === null){ dateText = d; return; }
