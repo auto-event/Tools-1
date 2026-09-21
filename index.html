@@ -215,16 +215,29 @@
       <div class="drop" id="dropZone">
         <div class="drop-icon">&#8593;</div>
         <p>Drag &amp; Drop file kesini</p>
-        <p class="small">Atau klik tombol dibawah &mdash; header wajib: title, date, time, description, privacy, tags</p>
+        <p class="small">Atau klik tombol dibawah &mdash; format lama (header title, date, time, description, privacy, tags) atau format baru tanpa header</p>
         <button class="btn-white" style="margin-top:14px;" id="pickFileBtn">Pilih File</button>
         <input type="file" id="csvFileInput" accept=".csv,.xlsx,.xls">
+      </div>
+
+      <div class="note-box" style="margin-top:14px;">
+        <b>Format tanpa header (otomatis dikenali):</b> tiap baris = 1 event. Kolom pertama = judul; kolom berlabel
+        <code class="inline">Date:</code> dan <code class="inline">Time:</code> (mis. <i>Saturday, Sep 19, 2026</i> dan <i>4:00 PM CDT</i>) dibaca sebagai jadwal
+        dibaca apa adanya beserta zona waktunya (jam tidak diubah; YouTube tetap menerima waktu yang tepat); kolom lain jadi deskripsi; kolom berawalan <code class="inline">#</code> jadi hashtag dan tags.<br>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">Privacy untuk format ini:
+          <select id="newFormatPrivacy" style="width:auto;padding:8px;">
+            <option value="private" selected>private</option>
+            <option value="unlisted">unlisted</option>
+            <option value="public">public</option>
+          </select>
+        </label>
       </div>
 
       <div id="warnBox"></div>
 
       <div class="table-wrap" style="margin-top:14px; display:none;" id="previewTableWrap">
         <table>
-          <thead><tr><th>Title</th><th>Date</th><th>Time WIB</th><th>Privacy</th><th>Tags</th></tr></thead>
+          <thead><tr><th>Title</th><th>Date</th><th>Time</th><th>Privacy</th><th>Tags</th></tr></thead>
           <tbody id="previewTableBody"></tbody>
         </table>
       </div>
@@ -304,7 +317,7 @@
 
         <div class="table-wrap" style="max-height:420px;">
           <table>
-            <thead><tr><th>Title &amp; Jadwal WIB</th><th>Privacy</th><th>Status</th></tr></thead>
+            <thead><tr><th>Title &amp; Jadwal</th><th>Privacy</th><th>Status</th></tr></thead>
             <tbody id="eventsTableBody"></tbody>
           </table>
         </div>
@@ -500,6 +513,7 @@
     pickFileBtn: document.getElementById("pickFileBtn"),
     csvFileInput: document.getElementById("csvFileInput"),
     warnBox: document.getElementById("warnBox"),
+    newFormatPrivacy: document.getElementById("newFormatPrivacy"),
     previewTableWrap: document.getElementById("previewTableWrap"),
     previewTableBody: document.getElementById("previewTableBody"),
 
@@ -820,14 +834,18 @@
   function fmtDateTime(ts){ return new Date(ts).toLocaleString("id-ID"); }
 
   // WIB -> UTC ISO string. null kalau invalid.
-  function wibToUtcIso(date, time){
+  // tz opsional (mis. "-05:00"); kosong = WIB (+07:00)
+  function wibToUtcIso(date, time, tz){
     try {
-      var iso = date + "T" + time + ":00+07:00";
+      var iso = date + "T" + time + ":00" + (tz || "+07:00");
       var d = new Date(iso);
       if (isNaN(d.getTime())) return null;
       return d.toISOString();
     } catch (e) { return null; }
   }
+  // Jadwal sebuah baris -> UTC ISO, memakai zona waktu asli baris (format tanpa header) atau WIB (format lama).
+  function rowUtcIso(row){ return wibToUtcIso(row.date, row.time, row._tz); }
+  function timeLabel(row){ return row._tzLabel || "WIB"; }
   function isPastUtc(isoUtc){
     return new Date(isoUtc).getTime() <= Date.now();
   }
@@ -872,6 +890,122 @@
       rows.push(obj);
     }
     return rows;
+  }
+
+  // ================= FORMAT BARU TANPA HEADER =================
+  // Tiap baris = 1 event. Kolom pertama = judul. Kolom berlabel "Date:" dan "Time:" = jadwal (zona waktu bebas, mis. CDT/PDT),
+  // dibaca APA ADANYA (tanggal & jam tidak diubah), zona waktunya disimpan di baris (_tz/_tzLabel) untuk konversi ke UTC saat kirim ke YouTube.
+  // Kolom berawalan "#" = hashtag (masuk deskripsi + tags). Kolom lain yang terisi = deskripsi (urut sesuai kolom).
+  var TZ_FIXED = {
+    UTC: 0, GMT: 0, Z: 0, WIB: 7, WITA: 8, WIT: 9,
+    EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7, AKST: -9, AKDT: -8, HST: -10
+  };
+  var TZ_US_GENERIC = { ET: [-5, -4], CT: [-6, -5], MT: [-7, -6], PT: [-8, -7] };   // [standar, DST]
+  var MONTHS = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+
+  function usDstOn(y, m, d){
+    function nthSunday(mi, n){
+      var first = new Date(Date.UTC(y, mi, 1)).getUTCDay();
+      return 1 + (7 - first) % 7 + 7 * (n - 1);
+    }
+    var t = Date.UTC(y, m - 1, d);
+    return t >= Date.UTC(y, 2, nthSunday(2, 2)) && t < Date.UTC(y, 10, nthSunday(10, 1));
+  }
+  function tzOffsetHours(abbr, y, m, d){
+    var a = String(abbr || "").toUpperCase();
+    if (TZ_FIXED.hasOwnProperty(a)) return TZ_FIXED[a];
+    if (TZ_US_GENERIC.hasOwnProperty(a)) return TZ_US_GENERIC[a][usDstOn(y, m, d) ? 1 : 0];
+    return null;
+  }
+  function cellLabelValue(cell, label){
+    // "🗓️ Date: Saturday, Sep 19, 2026" -> "Saturday, Sep 19, 2026"; label hanya dikenali di awal sel (setelah emoji/spasi)
+    var re = new RegExp("^[^A-Za-z0-9#]*" + label + "\\s*:\\s*(.*)$", "i");
+    var m = String(cell).match(re);
+    return m ? m[1].trim() : null;
+  }
+  function pad2(n){ return (n < 10 ? "0" : "") + n; }
+
+  // Kembalikan { date:"YYYY-MM-DD", time:"HH:mm" (24 jam, sesuai file), tz:"-05:00", label:"CDT" }, atau { error:"..." }
+  function parseSchedule(dateText, timeText){
+    var dm = String(dateText || "").match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/i);
+    var Y, M, D;
+    if (dm){ M = MONTHS[dm[1].toLowerCase()]; D = parseInt(dm[2], 10); Y = parseInt(dm[3], 10); }
+    else {
+      var im = String(dateText || "").match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (!im) return { error: "tanggal tidak terbaca (\"" + dateText + "\")" };
+      Y = parseInt(im[1], 10); M = parseInt(im[2], 10); D = parseInt(im[3], 10);
+    }
+    var tt = String(timeText || "");
+    var h, mi, rest;
+    var t12 = tt.match(/(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\s*([A-Za-z]{1,5})?/i);
+    if (t12){
+      h = parseInt(t12[1], 10) % 12 + (t12[3].toLowerCase() === "p" ? 12 : 0);
+      mi = t12[2] ? parseInt(t12[2], 10) : 0;
+      rest = t12[4];
+    } else {
+      var t24 = tt.match(/(\d{1,2}):(\d{2})\s*([A-Za-z]{1,5})?/);
+      if (!t24) return { error: "jam tidak terbaca (\"" + timeText + "\")" };
+      h = parseInt(t24[1], 10); mi = parseInt(t24[2], 10); rest = t24[3];
+    }
+    if (h > 23 || mi > 59) return { error: "jam tidak valid (\"" + timeText + "\")" };
+    if (!rest) return { error: "zona waktu tidak ada di \"" + timeText + "\" (mis. CDT, PDT, EST)" };
+    var off = tzOffsetHours(rest, Y, M, D);
+    if (off === null) return { error: "zona waktu \"" + rest + "\" belum dikenali" };
+    return {
+      date: Y + "-" + pad2(M) + "-" + pad2(D),
+      time: pad2(h) + ":" + pad2(mi),
+      tz: (off < 0 ? "-" : "+") + pad2(Math.abs(off)) + ":00",
+      label: String(rest).toUpperCase()
+    };
+  }
+
+  function looksLikeHeaderRow(cells){
+    var low = (cells || []).map(function(c){ return String(c).trim().toLowerCase(); });
+    return low.indexOf("title") !== -1 && low.indexOf("date") !== -1 && low.indexOf("time") !== -1;
+  }
+  function isBlankRow(cells){
+    return !(cells || []).some(function(c){ return String(c).trim() !== ""; });
+  }
+
+  // arrays = array of array (sel per baris). Hasil: { rows:[...objek standar...], problems:[...] }
+  function parseHeaderlessRows(arrays){
+    var rows = [], problems = [];
+    var privacy = (el.newFormatPrivacy && el.newFormatPrivacy.value) || "private";
+    arrays.forEach(function(cells, idx){
+      if (isBlankRow(cells)) return;
+      var n = idx + 1;
+      var vals = cells.map(function(c){ return String(c == null ? "" : c).trim(); });
+      var title = vals[0] || "";
+      var dateText = null, timeText = null, hashtags = [], descLines = [];
+      vals.forEach(function(v, ci){
+        if (!v || ci === 0) return;
+        if (v === title) return;                        // kolom judul yang diulang
+        var d = cellLabelValue(v, "Date");
+        var t = cellLabelValue(v, "Time");
+        if (d !== null && dateText === null){ dateText = d; return; }
+        if (t !== null && timeText === null){ timeText = t; return; }
+        if (v.charAt(0) === "#"){ hashtags.push(v.split(/\s+/)[0]); return; }
+        descLines.push(v);
+      });
+      var row = {
+        _id: genId(),
+        title: title,
+        date: "", time: "",
+        description: descLines.join("\n") + (hashtags.length ? "\n\n" + hashtags.join(" ") : ""),
+        privacy: privacy,
+        tags: hashtags.map(function(h){ return h.replace(/^#+/, ""); }).filter(Boolean).join(","),
+        status: "ready", message: "", videoId: null, _pastDate: false, _invalid: false
+      };
+      if (dateText === null || timeText === null){
+        problems.push("Baris " + n + ": kolom \"Date:\" atau \"Time:\" tidak ditemukan");
+      } else {
+        var c = parseSchedule(dateText, timeText);
+        if (c.error) problems.push("Baris " + n + ": " + c.error);
+        else { row.date = c.date; row.time = c.time; row._tz = c.tz; row._tzLabel = c.label; }
+      }
+      rows.push(row);
+    });
+    return { rows: rows, problems: problems };
   }
 
   function loadSheetJs(cb){
@@ -925,6 +1059,11 @@
       // supaya kolom tanggal (2026-09-25) tidak "ditebak" jadi serial number Excel (misal 46290.29).
       var reader = new FileReader();
       reader.onload = function(e){
+        var records = parseCsvRecords(e.target.result);
+        if (records.length && !looksLikeHeaderRow(records[0])){
+          processHeaderless(records, file.name);
+          return;
+        }
         var rows = parseCsvText(e.target.result);
         processRows(rows, file.name);
       };
@@ -937,6 +1076,11 @@
           var data = new Uint8Array(e.target.result);
           var wb = window.XLSX.read(data, { type: "array", cellDates: true });
           var sheet = wb.Sheets[wb.SheetNames[0]];
+          var aoa = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false, blankrows: false });
+          if (aoa.length && !looksLikeHeaderRow(aoa[0])){
+            processHeaderless(aoa, file.name);
+            return;
+          }
           var rows = window.XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, dateNF: "yyyy-mm-dd" });
           rows = rows.map(function(r){
             var o = {};
@@ -948,6 +1092,16 @@
         reader.readAsArrayBuffer(file);
       });
     }
+  }
+
+  function processHeaderless(arrays, fileName){
+    var res = parseHeaderlessRows(arrays);
+    if (res.rows.length === 0){
+      el.warnBox.innerHTML = '<div class="warn-box"><div class="warn-line"><span>&#9888;</span><span>File kosong atau tidak ada baris yang terbaca</span></div></div>';
+      return;
+    }
+    log("Format tanpa header terdeteksi (" + fileName + "): jam dibaca apa adanya sesuai zona waktu di file", "success");
+    finishParse(res.rows, res.problems, fileName, true);
   }
 
   function processRows(rows, fileName){
@@ -984,12 +1138,16 @@
       };
     });
 
+    finishParse(parsed, problems, fileName, false);
+  }
+
+  function finishParse(parsed, problems, fileName, headerless){
     parsed.forEach(function(row, idx){
       var bad = false;
       if (!row.title){ problems.push("Baris " + (idx+1) + ": title kosong"); bad = true; }
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)){ problems.push("Baris " + (idx+1) + ": date harus YYYY-MM-DD (dapat " + row.date + ")"); bad = true; }
-      if (!/^\d{2}:\d{2}$/.test(row.time)){ problems.push("Baris " + (idx+1) + ": time harus HH:mm (dapat " + row.time + ")"); bad = true; }
-      var utc = bad ? null : wibToUtcIso(row.date, row.time);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)){ if (!headerless) problems.push("Baris " + (idx+1) + ": date harus YYYY-MM-DD (dapat " + row.date + ")"); bad = true; }
+      if (!/^\d{2}:\d{2}$/.test(row.time)){ if (!headerless) problems.push("Baris " + (idx+1) + ": time harus HH:mm (dapat " + row.time + ")"); bad = true; }
+      var utc = bad ? null : rowUtcIso(row);
       if (!bad && !utc){ problems.push("Baris " + (idx+1) + ": gagal convert WIB ke UTC"); bad = true; }
       else if (utc && isPastUtc(utc)) row._pastDate = true;
       if (row.title.length > 100){ problems.push("Baris " + (idx+1) + ": title " + row.title.length + " karakter, batas YouTube 100"); bad = true; }
@@ -1036,7 +1194,7 @@
       rowsHtml += '<tr>' +
         '<td style="max-width:180px;">' + escapeHtml(r.title) + (r._pastDate ? ' <span style="color:#fca5a5;">(lewat)</span>' : '') + '</td>' +
         '<td class="mono">' + escapeHtml(r.date) + '</td>' +
-        '<td class="mono">' + escapeHtml(r.time) + '</td>' +
+        '<td class="mono">' + escapeHtml(r.time) + (r._tzLabel ? ' ' + escapeHtml(r._tzLabel) : '') + '</td>' +
         '<td><span class="badge-privacy ' + r.privacy + '">' + r.privacy + '</span></td>' +
         '<td style="max-width:140px;color:var(--muted);">' + escapeHtml(r.tags) + '</td>' +
         '</tr>';
@@ -1077,7 +1235,7 @@
 
     var rowsHtml = "";
     events.forEach(function(r){
-      var utc = wibToUtcIso(r.date, r.time);
+      var utc = rowUtcIso(r);
       var utcLabel = utc ? utc.slice(0, 16) : "invalid";
       var checked = selectedIds[r._id] ? "checked" : "";
 
@@ -1094,7 +1252,7 @@
             '<input type="checkbox" class="row-chk" data-id="' + r._id + '" ' + checked + ' style="margin-top:3px;">' +
             '<span>' +
               '<div style="font-weight:500;">' + escapeHtml(r.title || "(tanpa judul)") + (r._invalid ? ' <span style="color:#fca5a5;font-size:10px;">(data tidak valid)</span>' : '') + '</div>' +
-              '<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px;">' + escapeHtml(r.date) + ' &bull; ' + escapeHtml(r.time) + ' WIB &bull; ' + utcLabel + ' UTC &bull; ' + (appMode === "live" ? 'jadwal live' : 'auto-publish') + '</div>' +
+              '<div class="mono" style="font-size:11px;color:var(--muted);margin-top:2px;">' + escapeHtml(r.date) + ' &bull; ' + escapeHtml(r.time) + ' ' + escapeHtml(timeLabel(r)) + ' &bull; ' + utcLabel + ' UTC &bull; ' + (appMode === "live" ? 'jadwal live' : 'auto-publish') + '</div>' +
               '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' + escapeHtml(r.description) + '</div>' +
             '</span>' +
           '</label>' +
@@ -1655,7 +1813,7 @@
     lines.forEach(function(t, i){ ctx.fillText(t, 90, y0 + i * 92); });
     if (row){
       ctx.fillStyle = "#cfcfcf"; ctx.font = "38px sans-serif";
-      ctx.fillText(formatTanggalIndo(row.date) + "  \u2022  " + row.time + " WIB", 90, H - 90);
+      ctx.fillText(formatTanggalIndo(row.date) + "  \u2022  " + row.time + " " + timeLabel(row), 90, H - 90);
     }
   }
 
@@ -1850,7 +2008,7 @@
   // Satu event live. Tahap: 1) insert broadcast (wajib)  2) thumbnail (opsional)  3) tags via videos.update (opsional).
   // Tahap 2 & 3 gagal TIDAK membatalkan tahap 1: broadcast sudah jadi, hanya dilaporkan sebagai peringatan.
   function createLiveEvent(row, token, thumbBlob, cb){
-    var startUtc = wibToUtcIso(row.date, row.time);
+    var startUtc = rowUtcIso(row);
     if (!startUtc){ cb({ ok: false, error: "Format tanggal/jam salah" }); return; }
     if (isPastUtc(startUtc)){ cb({ ok: false, skipped: true, error: "Tanggal sudah lewat, di-skip" }); return; }
 
@@ -2025,7 +2183,7 @@
   // ================= UPLOAD KE YOUTUBE (videos.insert) =================
   // token dioper eksplisit (bukan global) supaya jelas akun mana yang dipakai tiap panggilan.
   function uploadOneEvent(row, token, videoBlob, cb){
-    var publishAtUtc = wibToUtcIso(row.date, row.time);
+    var publishAtUtc = rowUtcIso(row);
     if (!publishAtUtc){ cb({ ok: false, error: "Format tanggal/jam salah" }); return; }
     if (isPastUtc(publishAtUtc)){ cb({ ok: false, skipped: true, error: "Tanggal sudah lewat, di-skip" }); return; }
 
@@ -2210,10 +2368,10 @@
       var row = findEventById(targets[idx]._id);
       row.status = "loading";
       renderEventsTable();
-      log("[" + (idx+1) + "/" + targets.length + "] Akun: " + (acc.channelTitle || acc.email || "akun " + (activeAccountIndex+1)) + " -> Render & upload: " + row.title + " @ " + row.date + " " + row.time + " WIB", "info");
+      log("[" + (idx+1) + "/" + targets.length + "] Akun: " + (acc.channelTitle || acc.email || "akun " + (activeAccountIndex+1)) + " -> Render & upload: " + row.title + " @ " + row.date + " " + row.time + " " + timeLabel(row), "info");
 
       // Cek tanggal lewat DULU sebelum buang 5 detik untuk render video.
-      var pubUtc = wibToUtcIso(row.date, row.time);
+      var pubUtc = rowUtcIso(row);
       if (!pubUtc || isPastUtc(pubUtc)){
         row.status = pubUtc ? "skip" : "gagal";
         row.message = pubUtc ? "Tanggal sudah lewat, di-skip" : "Format tanggal/jam salah";
