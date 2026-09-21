@@ -231,8 +231,7 @@
       <div class="note-box" style="margin-top:14px;">
         <b>Format tanpa header (otomatis dikenali):</b> tiap baris = 1 event. Kolom pertama = judul; kolom berlabel
         <code class="inline">Date:</code> dan <code class="inline">Time:</code> (mis. <i>Saturday, Sep 19, 2026</i> dan <i>4:00 PM CDT</i>) dibaca sebagai jadwal
-        dibaca apa adanya beserta zona waktunya (jam tidak diubah; YouTube tetap menerima waktu yang tepat); kolom lain jadi deskripsi; kolom berawalan <code class="inline">#</code> jadi hashtag dan tags;
-        <b>kolom ke-14 (N)</b> tidak dimasukkan ke deskripsi &mdash; dipakai sebagai <b>pesan Auto Chat</b> (lihat di bawah). Kalau barisnya lebih pendek dari 14 kolom, sel yang diawali "Watch Live Stream", "Auto Chat:", atau "Live Chat:" tetap otomatis dikenali sebagai pesan Auto Chat, bukan ikut ke deskripsi.<br>
+        dibaca apa adanya beserta zona waktunya (jam tidak diubah; YouTube tetap menerima waktu yang tepat); kolom lain jadi deskripsi; kolom berawalan <code class="inline">#</code> jadi hashtag dan tags.<br>
         <label style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">Privacy untuk format ini:
           <select id="newFormatPrivacy" style="width:auto;padding:8px;">
             <option value="private">private</option>
@@ -240,18 +239,6 @@
             <option value="public" selected>public</option>
           </select>
         </label>
-      </div>
-
-      <div class="note-box" style="margin-top:14px;">
-        <label class="checkbox-lbl" style="margin-bottom:0;">
-          <input type="checkbox" id="autoChatEnableChk"> <b>Auto Chat saat Live dibuat</b>
-        </label>
-        <div class="small" style="margin-top:6px;">
-          Begitu jadwal live berhasil dibuat, tool otomatis kirim <b>1 pesan ke Live Chat</b> broadcast itu, isinya diambil dari
-          <b>kolom N (kolom ke-14)</b> di baris CSV/Excel yang sama (mis. link "Watch Live Stream 📺: ..."). Hanya jalan di <b>Mode Jadwal Live</b>.
-          Kalau live chat channel belum aktif saat itu (biasanya baru aktif menjelang jam mulai), pengiriman akan gagal dengan aman &mdash; broadcast tetap dibuat, cuma chat-nya dilewati (bisa dicoba manual lagi lewat kolom Aksi di tabel event).
-          Biaya API <b>+200 unit/event</b> kalau fitur ini aktif.
-        </div>
       </div>
 
       <div id="warnBox"></div>
@@ -467,11 +454,7 @@
   // Biaya per event menurut https://developers.google.com/youtube/v3/determine_quota_cost (diperbarui 15 Sep 2026):
   //   video : videos.insert = 1 unit dari bucket SENDIRI 100/hari (tidak memakai 10.000 unit)
   //   live  : liveBroadcasts.insert 50 + thumbnails.set 50 + videos.update (tag) 50 = 150 unit dari 10.000 unit bersama
-  //   auto chat (opsional) : liveChat/messages.insert = 200 unit/event, cuma dihitung kalau fitur Auto Chat diaktifkan
-  var COST = { live: { insert: 50, thumb: 50, tags: 50, chat: 200 }, DAILY_UNITS: 10000, VIDEO_BUCKET: 100 };
-  var LS_AUTOCHAT = "yt_csv_autochat_enabled";
-  var autoChatOn = (function(){ try { return localStorage.getItem(LS_AUTOCHAT) === "1"; } catch (e){ return false; } })();
-  function isAutoChatEnabled(){ return !!autoChatOn; }
+  var COST = { live: { insert: 50, thumb: 50, tags: 50 }, DAILY_UNITS: 10000, VIDEO_BUCKET: 100 };
   // videos.update MENIMPA seluruh snippet dan mewajibkan categoryId. Agar kategori tidak berubah diam-diam, nilai yang SAMA
   // dikirim saat membuat broadcast (snippet.categoryId boleh diisi di liveBroadcasts.insert) dan saat update tag.
   var LIVE_CATEGORY_ID = "22";   // 22 = People & Blogs
@@ -503,11 +486,9 @@
     if (mode === "live") q.liveUnits += (unitsUsed || 0); else q.videoSlots += 1;
     persistClientQuota();
   }
-  function liveEventCost(){
-    return COST.live.insert + COST.live.thumb + COST.live.tags + (isAutoChatEnabled() ? COST.live.chat : 0);   // 150, atau 350 kalau Auto Chat aktif
-  }
+  var LIVE_EVENT_COST = COST.live.insert + COST.live.thumb + COST.live.tags;   // 150
   function eventsPerDayPerClient(mode){
-    return mode === "live" ? Math.floor(COST.DAILY_UNITS / liveEventCost()) : COST.VIDEO_BUCKET;   // 66 vs 100 (atau 28 kalau Auto Chat aktif)
+    return mode === "live" ? Math.floor(COST.DAILY_UNITS / LIVE_EVENT_COST) : COST.VIDEO_BUCKET;   // 66 vs 100
   }
   var LS_MODE = "yt_csv_mode";
   var appMode = (function(){ try { var m = localStorage.getItem("yt_csv_mode"); return m === "live" ? "live" : "video"; } catch (e){ return "video"; } })();
@@ -546,7 +527,6 @@
     csvFileInput: document.getElementById("csvFileInput"),
     warnBox: document.getElementById("warnBox"),
     newFormatPrivacy: document.getElementById("newFormatPrivacy"),
-    autoChatEnableChk: document.getElementById("autoChatEnableChk"),
     previewTableWrap: document.getElementById("previewTableWrap"),
     previewTableBody: document.getElementById("previewTableBody"),
 
@@ -584,20 +564,6 @@
   el.tplPreview.textContent = CSV_TEMPLATE;
   el.clientIdInput.value = "";
   el.limitPerAccountInput.value = limitPerAccount;
-
-  if (el.autoChatEnableChk){
-    el.autoChatEnableChk.checked = autoChatOn;
-    el.autoChatEnableChk.addEventListener("change", function(){
-      autoChatOn = !!el.autoChatEnableChk.checked;
-      try { localStorage.setItem(LS_AUTOCHAT, autoChatOn ? "1" : "0"); } catch (e){}
-      if (limitAutoManaged){
-        limitPerAccount = eventsPerDayPerClient(appMode);
-        el.limitPerAccountInput.value = limitPerAccount;
-      }
-      applyModeUi();
-      log("Auto Chat " + (autoChatOn ? "diaktifkan" : "dimatikan") + " (kolom N csv jadi pesan live chat otomatis).", "info");
-    });
-  }
 
   // ================= HELPERS UMUM =================
   function showToast(msg){
@@ -639,7 +605,7 @@
     el.modeLiveBtn.className = live ? "btn-white" : "btn-ghost";
     el.modeNote.innerHTML = live
       ? '<b>Mode Jadwal Live.</b> Yang dibuat adalah <b>halaman event live terjadwal</b> (judul, deskripsi, tag, thumbnail), <b>bukan video</b>. Tidak ada yang tayang otomatis: konten baru ada kalau kamu benar-benar siaran. ' +
-        'Biaya per event <b>' + liveEventCost() + ' unit</b> (jadwal 50 + thumbnail 50 + tag 50' + (isAutoChatEnabled() ? " + auto chat 200" : "") + ') &asymp; <b>' + eventsPerDayPerClient("live") + ' event/hari per Client ID</b>. ' +
+        'Biaya per event <b>150 unit</b> (jadwal 50 + thumbnail 50 + tag 50) &asymp; <b>' + eventsPerDayPerClient("live") + ' event/hari per Client ID</b>. ' +
         '<b>Syarat:</b> live streaming harus <b>aktif</b> di channel (verifikasi telepon, aktivasi pertama bisa sampai 24 jam) dan channel harus terverifikasi untuk thumbnail. ' +
         'Jadwal harus di masa depan dan &ldquo;cukup dekat&rdquo; (batas Google tidak dipublikasikan, kalau ditolak coba tanggal lebih dekat). Render video tidak dipakai.'
       : '<b>Mode Upload Video.</b> Tiap event di-render jadi video WebM 5 detik lalu diupload. Kuota: <b>' + eventsPerDayPerClient("video") + ' upload/hari per Client ID</b> (bucket sendiri, 1 unit/upload). ' +
@@ -1023,24 +989,10 @@
       var n = idx + 1;
       var vals = cells.map(function(c){ return String(c == null ? "" : c).trim(); });
       var title = vals[0] || "";
-      var AUTOCHAT_COL_INDEX = 13;   // kolom N (ke-14, A=0-based) = posisi normal sumber pesan Auto Chat
-      // Kolom "Watch Live Stream 📺: <link>" (atau "Auto Chat:"/"Live Chat:") = pesan Auto Chat, TIDAK masuk deskripsi.
-      // Kadang ada JUGA sel di posisi lain yang cuma berisi label ini tanpa isi (mis. "Watch Live Stream 📺:" kosong,
-      // dipakai user cuma buat placeholder) -> itu harus di-skip total, jangan sampai nyasar ke deskripsi maupun ke autoChatText.
-      var AUTOCHAT_LABEL_RE = /^[^A-Za-z0-9#]*(watch\s*live\s*stream|auto\s*chat|live\s*chat)\b[^:]*:\s*(.*)$/i;
-      var dateText = null, timeText = null, hashtags = [], descLines = [], autoChatText = "";
-      var autoChatByIndex = (vals[AUTOCHAT_COL_INDEX] || "").trim();
+      var dateText = null, timeText = null, hashtags = [], descLines = [];
       vals.forEach(function(v, ci){
         if (!v || ci === 0) return;
         if (v === title) return;                        // kolom judul yang diulang
-        var chatMatch = v.match(AUTOCHAT_LABEL_RE);
-        if (chatMatch){
-          var chatContent = chatMatch[2].trim();
-          if (ci === AUTOCHAT_COL_INDEX || (!autoChatByIndex && !autoChatText && chatContent)){
-            autoChatText = chatContent || v;              // kolom N (atau fallback posisi lain) -> pesan chat
-          }
-          return;                                         // label live chat, apa pun isinya, tidak pernah masuk deskripsi
-        }
         var d = cellLabelValue(v, "Date");
         var t = cellLabelValue(v, "Time");
         if (d !== null && dateText === null){ dateText = d; return; }
@@ -1055,8 +1007,6 @@
         description: descLines.join("\n") + (hashtags.length ? "\n\n" + hashtags.join(" ") : ""),
         privacy: privacy,
         tags: hashtags.map(function(h){ return h.replace(/^#+/, ""); }).filter(Boolean).join(","),
-        autoChatText: autoChatText,     // isi kolom N, dipakai kalau fitur Auto Chat diaktifkan
-        autoChatSent: false, autoChatMessage: "",
         status: "ready", message: "", videoId: null, _pastDate: false, _invalid: false
       };
       if (dateText === null || timeText === null){
@@ -1313,11 +1263,7 @@
       if (r.status === "ready") statusHtml = '<span class="status-tag ready">Ready</span>';
       else if (r.status === "loading") statusHtml = '<span class="status-tag loading">Proses</span>';
       else if (r.status === "skip") statusHtml = '<span class="status-tag skip">Skip (lewat)</span>';
-      else if (r.status === "sukses") statusHtml = '<div><span class="status-tag sukses">Sukses</span>' + (r.videoId ? '<div class="mono" style="font-size:10px;color:var(--muted);margin-top:3px;">' + escapeHtml(r.videoId) + '</div>' : '') + (r.mode === "live" ? '<div style="font-size:10px;color:#93c5fd;margin-top:2px;">jadwal live' + (r.message && /tapi:/.test(r.message) ? ' (<span style="color:#fbbf24;">' + escapeHtml(r.message.replace("Jadwal live dibuat, tapi: ", "")) + '</span>)' : '') + '</div>' : '') + (r.uploadedVia ? '<div style="font-size:10px;color:var(--muted);margin-top:2px;">via ' + escapeHtml(r.uploadedVia) + '</div>' : '') +
-        (r.autoChatText ? (r.autoChatSent
-          ? '<div style="font-size:10px;color:#86efac;margin-top:2px;">💬 auto chat terkirim</div>'
-          : '<div style="font-size:10px;color:#fbbf24;margin-top:2px;">💬 auto chat belum terkirim <button type="button" class="chat-retry-btn btn-ghost" data-id="' + r._id + '" style="padding:2px 8px;font-size:10px;margin-left:4px;">Coba lagi</button></div>') : '') +
-        '</div>';
+      else if (r.status === "sukses") statusHtml = '<div><span class="status-tag sukses">Sukses</span>' + (r.videoId ? '<div class="mono" style="font-size:10px;color:var(--muted);margin-top:3px;">' + escapeHtml(r.videoId) + '</div>' : '') + (r.mode === "live" ? '<div style="font-size:10px;color:#93c5fd;margin-top:2px;">jadwal live' + (r.message && /tapi:/.test(r.message) ? ' (<span style="color:#fbbf24;">' + escapeHtml(r.message.replace("Jadwal live dibuat, tapi: ", "")) + '</span>)' : '') + '</div>' : '') + (r.uploadedVia ? '<div style="font-size:10px;color:var(--muted);margin-top:2px;">via ' + escapeHtml(r.uploadedVia) + '</div>' : '') + '</div>';
       else if (r.status === "gagal") statusHtml = '<div><span class="status-tag gagal">Gagal</span><div style="font-size:10px;color:#fca5a5;max-width:180px;margin-top:3px;">' + escapeHtml(r.message || "") + '</div></div>';
 
       rowsHtml += '<tr>' +
@@ -1346,13 +1292,6 @@
         el.selectedCountLabel.textContent = selCount2 + " dipilih";
         el.selectAllChk.checked = selCount2 === events.length;
         el.uploadAllBtn.disabled = running || selCount2 === 0 || accounts.length === 0;
-      });
-    });
-
-    Array.prototype.forEach.call(document.querySelectorAll(".chat-retry-btn"), function(btn){
-      btn.addEventListener("click", function(){
-        var row = findEventById(this.getAttribute("data-id"));
-        if (row) retryAutoChatForRow(row);
       });
     });
 
@@ -2233,28 +2172,9 @@
           }).catch(function(e){ warnings.push("tag: " + (e.message || e)); next(); });
         };
 
-        // ---- tahap 4 (opsional): Auto Chat, kirim 1 pesan liveChat berisi kolom N csv, kalau fitur diaktifkan ----
-        var stepChat = function(next){
-          if (!isAutoChatEnabled() || !row.autoChatText){ next(); return; }
-          var liveChatId = bc.snippet && bc.snippet.liveChatId;
-          if (!liveChatId){ warnings.push("auto chat: broadcast ini tidak punya live chat (liveChatId kosong)"); next(); return; }
-          postLiveChatMessage(liveChatId, token, row.autoChatText, function(err){
-            costUsed += COST.live.chat;
-            if (err){
-              // Wajar gagal kalau live chat belum aktif (baru aktif menjelang jam mulai) -> tidak membatalkan broadcast.
-              warnings.push("auto chat gagal: " + err);
-              row.autoChatSent = false;
-            } else {
-              row.autoChatSent = true;
-              row.autoChatMessage = row.autoChatText;
-            }
-            next();
-          });
-        };
-
-        stepThumb(function(){ stepTags(function(){ stepChat(function(){
+        stepThumb(function(){ stepTags(function(){
           cb({ ok: true, videoId: videoId, warnings: warnings, unitsUsed: costUsed, error: warnings.length ? warnings.join("; ") : null });
-        }); }); });
+        }); });
       });
     }).catch(function(e){ cb({ ok: false, error: e.message || String(e) }); });
   }
@@ -2284,56 +2204,6 @@
       }).catch(function(e){ cb(e.message || String(e), attempt); });
     };
     tryOnce();
-  }
-
-  // Kirim 1 pesan teks ke Live Chat sebuah broadcast (liveChat/messages.insert, 200 unit).
-  // Baru bisa sukses kalau live chat channel-nya sudah aktif (biasanya menjelang jam mulai / setelah live dimulai) -> error di sini WAJAR, bukan bug.
-  function postLiveChatMessage(liveChatId, token, text, cb){
-    var msg = String(text || "").slice(0, 200);   // batas panjang pesan live chat YouTube
-    if (!msg){ cb("pesan kosong"); return; }
-    fetch("https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet", {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json; charset=UTF-8" },
-      body: JSON.stringify({
-        snippet: {
-          liveChatId: liveChatId,
-          type: "textMessageEvent",
-          textMessageDetails: { messageText: msg }
-        }
-      })
-    }).then(function(res){
-      if (res.ok){ cb(null); return; }
-      return res.text().then(function(t){
-        var reason = "";
-        try { var j = JSON.parse(t); reason = (j.error && j.error.errors && j.error.errors[0] && j.error.errors[0].reason) || ""; } catch (e){}
-        var hint = reason === "liveChatEnded" ? "live chat belum/sudah tidak aktif"
-          : reason === "forbidden" ? "tidak diizinkan (channel belum boleh chat?)"
-          : reason === "liveChatDisabled" ? "live chat dimatikan di broadcast ini"
-          : (res.status + (reason ? " " + reason : ""));
-        cb(hint + ": " + t.slice(0, 140));
-      });
-    }).catch(function(e){ cb(e.message || String(e)); });
-  }
-
-  // Coba kirim ulang pesan Auto Chat utk 1 baris yang sudah sukses jadi jadwal live tapi chat-nya gagal terkirim sebelumnya.
-  function retryAutoChatForRow(row){
-    if (!row || !row.videoId || !row.autoChatText){ showToast("Baris ini tidak punya pesan Auto Chat"); return; }
-    var acc = accounts.find(function(a){
-      return !isTokenExpired(a) && ((a.channelTitle && a.channelTitle === row.uploadedVia) || (a.email && a.email === row.uploadedVia));
-    });
-    if (!acc){ showToast("Login ulang akun \"" + row.uploadedVia + "\" dulu"); return; }
-    fetch("https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&id=" + encodeURIComponent(row.videoId), {
-      headers: { "Authorization": "Bearer " + acc.token }
-    }).then(function(r){ return r.json(); }).then(function(data){
-      var item = data && data.items && data.items[0];
-      var liveChatId = item && item.snippet && item.snippet.liveChatId;
-      if (!liveChatId){ showToast("Broadcast ini tidak punya live chat"); return; }
-      postLiveChatMessage(liveChatId, acc.token, row.autoChatText, function(err){
-        addClientQuotaUsage(acc.clientId, "live", COST.live.chat);
-        if (err){ log("✗ Auto chat \"" + row.title + "\" masih gagal: " + err, "error"); showToast("Auto chat gagal: " + err); }
-        else { log("✓ Auto chat \"" + row.title + "\" berhasil dikirim.", "success"); row.autoChatSent = true; row.autoChatMessage = row.autoChatText; showToast("Pesan chat terkirim"); renderEventsTable(); }
-      });
-    }).catch(function(e){ showToast("Gagal cek live chat: " + (e.message || e)); });
   }
 
   // Perbaiki thumbnail utk baris yang sudah sukses jadi jadwal live tapi thumbnail-nya gagal ke-set sebelumnya.
